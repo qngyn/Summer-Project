@@ -1,0 +1,1126 @@
+---
+title: "GO Tools Test"
+author:
+  affiliation: 'Case Western Reserve University'
+  email: 'qtn2@case.edu'
+  name: 'Quynh Nguyen'
+date: "Sys.Date()"
+output:
+  html_document: 
+    theme: 'united'
+    highlight: 'tango'
+    df_print: 'paged'
+    toc: yes
+    toc_depth: 3
+    toc_float:
+      collapsed: false
+      smooth_scroll: true
+    code_folding: 'hide'
+---
+```{r setup, include=FALSE}
+suppressPackageStartupMessages(library(knitr))
+knitr::opts_knit$set(root.dir = normalizePath("~/Downloads/Summer Project"))   # Important
+knitr::opts_chunk$set(warning      = FALSE    # Set to TRUE when coding, FALSE when completed.
+                     , message     = FALSE    # Set to TRUE when coding, FALSE when completed. 
+                     , echo        = TRUE     # Leave as TRUE for Course, but turn this off for real projects
+                     , cache       = FALSE    # Turn off, be careful when using Cache
+                     , strip.white = TRUE     # No reason not to do this.
+                     )
+# do not insert anythin between  ---  and setup chunk.
+# don't put anything else in this chunck
+# End of setup
+```
+
+##Tools
+This is the list of several popular GO Tools:
+* DAVID
+* GOrilla
+* g:Profiler
+* Gene Ontology Website - powered by PANTHER 
+* PANTHER (using GO Slim)
+* FuncAssociate 
+* quickGO
+* GeneWaver 
+* Ontologizer 
+* GOnet (website only)
+
+However, in this research, only *DAVID*, *GOrilla*, *g:Profiler*, *Gene Ontology Website - powered by PANTHER* will be used. For other tools, such as *FuncAssociate* or *Ontologizer*, it doesn't indicate the domain of which its GO terms belong to, so it cannot be further investigate. *PANTHER* uses GO Slim terms, which is quite different comparing to other tools. *quickGO* can be used via its website, but it can only search at most one GO Terms at a time. *GOnet* and *GeneWaver* can also be used via their website, but they kept returning errors. Therefore, the first four tools will be the main focus in order to create the pipeline for this research.   
+
+For GO Semnatic Analysis, there are a couple of R Bioconductor packages or website that can be used: 
+* Onassis
+* ViSEAGO: Downloaded
+* GOSemSim: Downloaded
+* simplifyEnrichment: Downloaded
+* GOGO
+Besides *GOGO*, others are R Bioconductor packages. However, *GOGO* cannot be used in this pipeline since it remains returning error. *Onassis* cannot be downloaded. The other three, *ViSEAGO*, *GOSemSim*, and *simplifyEnrichment* are able to used. 
+  
+
+## Libraries
+List and describe the libraries that are used by this script
+  * Biobase: provides the  Expression Set opbject
+  * GEOquery: query GEO to apply Bioconductor to these data 
+  * dplyr: manipulate data 
+  * impute: imputation for microarray data 
+  * readr: read rectangular data from delimited files (i.e:.csv, .tsv)
+  * readxl: read and import data from excel file
+  * stringr: manipulate string in R 
+  * ggVennDiagram: create venn diagram 
+  * RColorBrewer: 
+  * magick:
+  * limma:
+```{r library}
+suppressPackageStartupMessages(library(Biobase))
+suppressPackageStartupMessages(library(GEOquery))
+suppressPackageStartupMessages(library(assertthat))
+suppressPackageStartupMessages(library(dplyr))
+suppressPackageStartupMessages(library(impute))
+suppressPackageStartupMessages(library(readr))
+suppressPackageStartupMessages(library(readxl))
+suppressPackageStartupMessages(library(stringr))
+suppressPackageStartupMessages(library(ggVennDiagram))
+suppressPackageStartupMessages(library(RColorBrewer))
+suppressPackageStartupMessages(library(magick))
+suppressPackageStartupMessages(library(limma))
+# source("https://bioconductor.org/biocLite.R")
+# biocLite()
+
+# End of loadLibraries.
+```
+
+In this pipeline, three different gene sets would be used. These three gene sets are *GSE11352*, *GSE60880*, *GSE1397*. For the rest of the pipeline, whenever the p-adjusted values are needed, FDR method would be chosen to calculate this value. Additionally, In order to compare the numbers of GO terms can be obtained from four different tools, a venn diagram will be created for each of domain. 
+
+#GSE11352
+```{r Download GSE11352, eval = FALSE}
+selected.gse <- GEOquery::getGEO('GSE11352', GSEMatrix = TRUE, getGPL = TRUE)
+
+class(selected.gse)
+names(selected.gse)
+
+##same with the below lines in Preeti's report
+##if (length(gset) > 1) idx <- grep("GPL570", attr(gset, "names")) else idx <- 1
+##gset <- gset[[idx]]
+eset.selected <- selected.gse[[1]]
+
+Biobase::pData(eset.selected)[,1:5]
+dim(exprs(eset.selected)) ## This gives 18 data points
+
+#Group names all of the samples
+##Only get data from 12 and 24 hours of exposure. Data points from 48 hours of exposure would be marked as X
+###Since there are 18 data points in total, the char(gsms) = 18. The data is listed as 12 to 24 to 48 with the last 6 data is 48 hours of exposure --> The last 6 chars in gsms are "X"
+gsms <- "111000333222XXXXXX"
+sml <- strsplit(gsms, split="")[[1]]
+
+##omit the last 6 data points and keep the rest
+sel <- which(sml != "X")
+sml <- sml[sel]
+eset.selected <- eset.selected[ ,sel]
+
+
+dim(exprs(eset.selected)) ## This gives 12 data points
+
+eset.GSE11352 <- eset.selected 
+
+#log2 transformation
+ex <- exprs(eset.GSE11352)
+qx <- as.numeric(quantile(ex, c(0., 0.25, 0.5, 0.75, 0.99, 1.0), na.rm=T))
+LogC <- (qx[5] > 100) ||
+(qx[6]-qx[1] > 50 && qx[2] > 0) ||
+(qx[2] > 0 && qx[2] < 1 && qx[4] > 1 && qx[4] < 2)
+if (LogC) { ex[which(ex <= 0)] <- NaN
+exprs(eset.GSE11352) <- log2(ex) }
+
+# set up the data and proceed with analysis
+fl <- as.factor(sml)
+description <- make.names(c("12hrT","12hrU","24hrT","24hrU"))
+levels(fl) <- description
+eset.GSE11352$description <- fl
+design <- model.matrix(~description + 0, eset.GSE11352)
+
+### model.matrix (from the stats package) creates a design matrix as specified.
+colnames(design) <- levels(fl)
+fit <- lmFit(eset.GSE11352, design)
+
+
+cts <- paste(description, c(tail(description, -1), head(description, 1)), sep="-")
+cont.matrix <- makeContrasts(contrasts=cts, levels=design)
+
+fit2 <- contrasts.fit(fit, cont.matrix)
+fit2 <- eBayes(fit2, 0.01)
+
+tT <- topTable(fit2, adjust="fdr", sort.by="B", number=500)
+
+gpl <- annotation(eset.GSE11352)
+platf <- getGEO(gpl, AnnotGPL=TRUE)
+ncbifd <- data.frame(attr(dataTable(platf), "table"))
+
+tT <- tT[setdiff(colnames(tT), setdiff(fvarLabels(eset.GSE11352), "ID"))]
+tT <- merge(tT, ncbifd, by="ID")
+
+tT <- tT[order(tT$P.Value), ] # restore correct order
+#tT <- subset(tT, select=c("ID","adj.P.Val","P.Value","Gene.Symbol","Gene.Title"))
+tT2 <- subset(tT, select=c("Gene.Symbol"))
+#write.table(tT, file='GSE11352.csv', row.names=F, sep="\t")
+#The gene list ends up to be very different from Preeti's report
+write.csv(tT2, file='GSE11352gene.csv', row.names=F)
+
+GSE11352background <- eset.GSE11352@featureData@data[["Gene Symbol"]]
+write.csv(GSE11352background , file = 'GSE11352background.csv', row.names = F )
+
+##### Clean up #####
+#rm(geoID1, path.geo, new.folder, selected.gse, eset.selected)
+```
+
+```{r GSE11352 GO Term}
+##Except for FuncAssociation that is not indicated the GO domains, other tools would divide it into 3 groups as biological pathway, molecular function, and cellular component.
+
+####FuncAssociate####
+#func11352 <- read.delim("/Users/ngquynhst/Downloads/Summer Project/geo/GSE11352/func11352.tsv")
+####g:Profiler
+gprofiler11352 <- read_csv("~/Downloads/Summer Project/geo/GSE11352/gProfiler_hsapiens_8-2-2022_9-53-05 AM__intersections.csv")
+
+###GO Biological Pathway for GSE11352###
+####DAVID####
+#Choosing GO Direct term instead of choosing all 
+david11352bp <-  read.delim("~/Downloads/Summer Project/geo/GSE11352/GSE11352_DAVID_BP.txt")
+david11352bp_go <- str_split_fixed(david11352bp$Term, "~", 2)
+david11352bp_geneid <- david11352bp$Genes
+david11352bp_padj <- david11352bp$FDR 
+####g:Profiler####
+gprofiler11352bp <- gprofiler11352  %>% filter(source == "GO:BP")
+gprofiler11352bp <- gprofiler11352bp[,c("term_name", "term_id", "adjusted_p_value", "intersections")]
+colnames(gprofiler11352bp) <- c("Description", "ID", "p.adjust", "geneID")
+
+####GO website - Powered by PANTHER####
+go11352_pantherbp <-read.delim("~/Downloads/Summer Project/geo/GSE11352/GSE11352_BP_GO.txt", comment.char="#")
+go11352_pantherbp_go <- go11352_pantherbp$GO.biological.process.complete
+go11352_pantherbp_go <- word(go11352_pantherbp_go, -1)
+go11352_pantherbp_go <-gsub("[()]", "", go11352_pantherbp_go)
+go11352_pantherbp_description <- word(go11352_pantherbp$GO.biological.process.complete, 1, -2)
+go11352_pantherbp_p.adj <- go11352_pantherbp$upload_1..FDR.
+###GOrilla####
+gorilla11352bp <- read_excel("~/Downloads/Summer Project/geo/GSE11352/GSE11352_GOrilla_BP.xlsx")
+gorilla11352bp_p.adj <- p.adjust(gorilla11352bp$`P-value`, method = 'fdr')
+
+###GO Cellular Component for GSE11352###
+####DAVID####
+david11352cc <-  read.delim("~/Downloads/Summer Project/geo/GSE11352/GSE11352_DAVID_CC.txt")
+david11352cc_go <- str_split_fixed(david11352cc$Term, "~", 2)
+david11352cc_geneid <- david11352cc$Genes
+david11352cc_padj <- david11352cc$FDR 
+####g:Profiler####
+gprofiler11352cc <- gprofiler11352  %>% filter(source == "GO:CC")
+gprofiler11352cc <- gprofiler11352cc[,c("term_name", "term_id", "adjusted_p_value", "intersections")]
+colnames(gprofiler11352cc) <- c("Description", "ID", "p.adjust", "geneID")
+####GO website - Powered by PANTHER####
+go11352_panthercc <-read.delim("~/Downloads/Summer Project/geo/GSE11352/GSE11352_CC_GO.txt", comment.char="#")
+go11352_panthercc_go <- go11352_panthercc$GO.cellular.component.complete
+go11352_panthercc_go <- word(go11352_panthercc_go, -1)
+go11352_panthercc_go <- gsub("[()]", "", go11352_panthercc_go)
+go11352_panthercc_description <- word(go11352_panthercc$GO.cellular.component.complete, 1, -2)
+go11352_panthercc_p.adj <- go11352_panthercc$upload_1..FDR.
+###GOrilla####
+gorilla11352cc <-read_excel("~/Downloads/Summer Project/geo/GSE11352/GSE11352_GOrilla_CC.xlsx")
+gorilla11352cc_p.adj <- p.adjust(gorilla11352cc$`P-value`, method = 'fdr')
+
+###GO Molecular Function for GSE11352###
+####DAVID####
+david11352mf <-  read.delim("~/Downloads/Summer Project/geo/GSE11352/GSE11352_DAVID_MF.txt")
+david11352mf_go <-str_split_fixed(david11352mf$Term, "~", 2)
+david11352mf_geneid <- david11352mf$Genes
+david11352mf_padj <- david11352mf$FDR 
+####g:Profiler####
+gprofiler11352mf <- gprofiler11352  %>% filter(source == "GO:MF")
+gprofiler11352mf <- gprofiler11352mf[,c("term_name", "term_id", "adjusted_p_value", "intersections")]
+colnames(gprofiler11352mf) <- c("Description", "ID", "p.adjust", "geneID")
+
+####GO website - Powered by PANTHER####
+go11352_panthermf <-read.delim("~/Downloads/Summer Project/geo/GSE11352/GSE11352_MF_GO.txt", comment.char="#")
+go11352_panthermf_go <- go11352_panthermf$GO.molecular.function.complete
+go11352_panthermf_go <- word(go11352_panthermf_go, -1)
+go11352_panthermf_go <- gsub("[()]", "", go11352_panthermf_go)
+go11352_panthermf_description <- word(go11352_panthermf$GO.molecular.function.complete, 1, -2)
+go11352_panthermf_p.adj <- go11352_panthermf$upload_1..FDR.
+
+####GOrilla####
+gorilla11352mf <- read_excel("~/Downloads/Summer Project/geo/GSE11352/GSE11352_GOrilla_MF.xlsx")
+gorilla11352mf_p.adj <- p.adjust(gorilla11352mf$`P-value`, method = 'fdr')
+```
+
+For GSE11352,it seems like  *DAVID* always creates the most GO Terms comparing to others tool. The numbers of overlapped GO Terms between four tools are not a lot, but the GO Terms that are overlapped between two to three tools quite abundant.
+```{r Comparing Table for GSE11352, echo = FALSE}
+###Biological Pathway###
+v1 <- david11352bp_go[,1]
+v2 <- gprofiler11352bp$ID
+v3 <- gorilla11352bp$`GO term`
+v4 <- go11352_pantherbp_go 
+bpGO11352 <- unique(c(v1,v2,v3, v4))
+#write.table(bpGO11352, file='GSE11352bp.csv', row.names=F, sep="\t")
+
+bptable11352 <- data.frame(bpGO11352)
+bptable11352$david <- bpGO11352%in%v1
+bptable11352$gprofiler <- bpGO11352%in%v2
+bptable11352$gorilla <- bpGO11352%in%v3
+bptable11352$panther <- bpGO11352%in%v4
+bptable11352[bptable11352 == "TRUE"] <- "x"
+bptable11352[bptable11352 == "FALSE"] <- ""
+View(bptable11352)
+
+##create venn diagram for biological process domain
+list11352bp <- list(david = david11352bp_go[,1], gprofiler = gprofiler11352bp$ID, gorilla = gorilla11352bp$`GO term`, panther = go11352_pantherbp_go)
+
+###Molecular Function###
+v5 <- david11352mf_go[,1]
+v6 <- gprofiler11352mf$ID
+v7 <- gorilla11352mf$`GO term`
+v8 <- go11352_panthermf_go
+mfGO11352 <- unique(c(v5,v6, v7, v8))
+#write.table(mfGO11352, file='GSE11352mf.csv', row.names=F, sep="\t")
+
+mftable11352 <- data.frame(mfGO11352)
+mftable11352$david <- mfGO11352%in%v5
+mftable11352$gprofiler <- mfGO11352%in%v6
+mftable11352$gorilla <- mfGO11352%in%v7
+mftable11352$panther <- mfGO11352%in%v8
+mftable11352[mftable11352 == "TRUE"] <- "x"
+mftable11352[mftable11352 == "FALSE"] <- ""
+View(mftable11352)
+
+##venn diagram for molecular function domain
+list11352mf <- list(david = david11352mf_go[,1], gprofiler = gprofiler11352mf$ID, gorilla = gorilla11352mf$`GO term`, panther = go11352_panthermf_go)
+
+###Cellular Component
+v9 <- david11352cc_go[,1]
+v10 <- gprofiler11352cc$ID
+v11 <- gorilla11352cc$`GO term`
+v12 <- go11352_panthercc_go
+ccGO11352 <- unique(c(v9,v10,v11, v12))
+#write.table(ccGO11352, file='GSE11352cc.csv', row.names=F, sep="\t")
+
+cctable11352 <- data.frame(ccGO11352)
+cctable11352$david <- ccGO11352%in%v9
+cctable11352$gprofiler <- ccGO11352%in%v10
+cctable11352$gorilla <- ccGO11352%in%v11
+cctable11352$panther <- ccGO11352%in%v12
+cctable11352[cctable11352 == "TRUE"] <- "x"
+cctable11352[cctable11352 == "FALSE"] <- ""
+View(cctable11352)
+
+##venn diagram for cellular component domain
+list11352cc<- list(david = david11352cc_go[,1], gprofiler = gprofiler11352cc$ID, gorilla = gorilla11352cc$`GO term`, panther = go11352_panthercc_go)
+
+ggVennDiagram(list11352bp, label_alpha = 0, edge_lty = "blank") + ggplot2::scale_fill_gradient(low="white",high = "dark red")
+
+ggVennDiagram(list11352mf, label_alpha = 0, edge_lty = "blank") + ggplot2::scale_fill_gradient(low="white",high = "dark red")
+
+ggVennDiagram(list11352cc, label_alpha = 0, edge_lty = "blank") + ggplot2::scale_fill_gradient(low="white",high = "dark red")
+```
+
+##GSE1397
+```{r Download GSE1397, eval = FALSE}
+##Script obtained from the Textbook without modification
+# load series and platform data from GEO
+### Note that the getGEO command of the GEOquery library is useful to
+### extract GEO datasets
+gset <- getGEO("GSE1397", GSEMatrix =TRUE)
+if (length(gset) > 1) idx <- grep("GPL96", attr(gset, "names")) else idx <- 1
+gset <- gset[[idx]]
+
+fvarLabels(gset) <- make.names(fvarLabels(gset))
+sml <- c("G0","G0","G0","G0","G1","G1","G1","G1","G1","G1","G1","G0","G0", "G0","G1","G1","G0","G0","G1","G1","G0","G0","X","X","X","X","X","X")
+
+sel <- which(sml != "X")
+sml <- sml[sel]
+gset <- gset[ ,sel]
+
+ex <- exprs(gset)
+qx <- as.numeric(quantile(ex, c(0., 0.25, 0.5, 0.75, 0.99, 1.0), na.rm=T))
+LogC <- (qx[5] > 100)||
+(qx[6]-qx[1] > 50 && qx[2] > 0) ||
+(qx[2] > 0 && qx[2] < 1 && qx[4] > 1 && qx[4] < 2)
+if (LogC) { ex[which(ex <= 0)] <- NaN
+exprs(gset) <- log2(ex) }
+
+fl <- as.factor(sml)
+gset$description <- fl
+design <- model.matrix(~ description + 0, gset)
+
+colnames(design) <- levels(fl)
+fit <- lmFit(gset, design)
+
+cont.matrix <- makeContrasts(G1-G0, levels=design)
+
+fit2 <- contrasts.fit(fit, cont.matrix)
+fit2 <- eBayes(fit2, 0.01)
+
+tT <- topTable(fit2, adjust="fdr", sort.by="B", number=500)
+gpl <- annotation(gset)
+platf <- getGEO(gpl, AnnotGPL=TRUE)
+ncbifd <- data.frame(attr(dataTable(platf), "table"))
+
+tT <- tT[setdiff(colnames(tT), setdiff(fvarLabels(gset), "ID"))]
+tT <- merge(tT, ncbifd, by="ID")
+
+tT <- tT[order(tT$P.Value), ] # restore correct order
+tT <- subset(tT, select=c("ID","adj.P.Val","P.Value","t","B","logFC","Gene.symbol","Gene.title","Chromosome.location"))
+tT2_GSE1397 <- subset(tT, select = c("Gene.symbol"))
+write.csv(tT2_GSE1397 , file='GSE1397gene.csv', row.names=F)
+
+gse1397background <- gset@featureData@data[["Gene.Symbol"]]
+
+write.csv(gse1397background , file='gse1397background.csv', row.names=F)
+```
+
+```{r GSE1397 GO Term}
+##Except for FuncAssociation that is not indicated the GO domains, other tools would divide it into 3 groups as biological pathway, molecular function, and cellular component.
+
+####g:Profiler####
+gprofiler1397 <-read_csv("geo/GSE1397/GSE1397_gProfiler.csv")
+
+###GO Biological Pathway for GSE1397###
+####DAVID####
+#Choosing GO Direct term instead of choosing all 
+david1397bp <- read.delim("~/Downloads/Summer Project/geo/GSE1397/GSE1397_DAVID_BP.txt")
+david1397bp_go <- str_split_fixed(david1397bp$Term, "~", 2)
+david1397bp_geneid <- david1397bp$Genes
+david1397bp_padj <- david1397bp$FDR 
+####g:Profiler####
+gprofiler1397bp <- gprofiler1397  %>% filter(source == "GO:BP")
+gprofiler1397bp <- gprofiler1397bp[,c("term_name", "term_id", "adjusted_p_value", "intersections")]
+colnames(gprofiler1397bp) <- c("Description", "ID", "p.adjust", "geneID")
+####GO Website - Powered by PANTHER#### 
+go1397_pantherbp <-read.delim("~/Downloads/Summer Project/geo/GSE1397/GSE1397_BP_GO.txt", comment.char="#")
+go1397_pantherbp <- go1397_pantherbp %>% filter(!grepl('UNCLASSIFIED',GO.biological.process.complete))
+go1397_pantherbp_go <- go1397_pantherbp$GO.biological.process.complete
+go1397_pantherbp_go <- word(go1397_pantherbp_go, -1)
+go1397_pantherbp_go <- gsub("[()]", "", go1397_pantherbp_go)
+go1397_pantherbp_description <- word(go1397_pantherbp$GO.biological.process.complete, 1, -2)
+go1397_pantherbp_p.adj <- go1397_pantherbp$upload_1..FDR.
+####GOrilla####
+gorilla1397bp <- read_excel("~/Downloads/Summer Project/geo/GSE1397/GSE1397_GOrilla_BP.xlsx")
+gorilla1397bp_p.adj <- p.adjust(gorilla1397bp$`P-value`, method = 'fdr')
+
+###GO Cellular Component for GSE1397###
+####DAVID####
+david1397cc <- read.delim("~/Downloads/Summer Project/geo/GSE1397/GSE1397_DAVID_CC.txt")
+david1397cc_go <- str_split_fixed(david1397cc$Term, "~", 2)
+david1397cc_geneid <- david1397cc$Genes
+david1397cc_padj <- david1397cc$FDR 
+####g:Profiler####
+gprofiler1397cc <- gprofiler1397  %>% filter(source == "GO:CC")
+gprofiler1397cc <- gprofiler1397cc[,c("term_name", "term_id", "adjusted_p_value", "intersections")]
+colnames(gprofiler1397cc) <- c("Description", "ID", "p.adjust", "geneID")
+####GO Website - Powered by PANTHER#### 
+go1397_panthercc <-read.delim("~/Downloads/Summer Project/geo/GSE1397/GSE1397_CC_GO.txt", comment.char="#")
+go1397_panthercc <- go1397_panthercc %>% filter(!grepl('UNCLASSIFIED',GO.cellular.component.complete))
+go1397_panthercc_go <- go1397_panthercc$GO.cellular.component.complete
+go1397_panthercc_go <- word(go1397_panthercc_go, -1)
+go1397_panthercc_go <- gsub("[()]", "", go1397_panthercc_go)
+go1397_panthercc_description <- word(go1397_panthercc$GO.cellular.component.complete, 1, -2)
+go1397_panthercc_p.adj <- go1397_panthercc$upload_1..FDR.
+####GOrilla####
+gorilla1397cc <- read_excel("~/Downloads/Summer Project/geo/GSE1397/GSE1397_GOrilla_CC.xlsx")
+gorilla1397cc_p.adj <- p.adjust(gorilla1397cc$`P-value`, method = 'fdr')
+
+###GO Molecular Function for GSE1397###
+####DAVID####
+david1397mf <- read.delim("~/Downloads/Summer Project/geo/GSE1397/GSE1397_DAVID_MF.txt")
+david1397mf_go <- str_split_fixed(david1397mf$Term, "~", 2)
+david1397mf_geneid <- david1397mf$Genes
+david1397mf_padj <- david1397mf$FDR 
+####g:Profiler####
+gprofiler1397mf <- gprofiler1397  %>% filter(source == "GO:MF")
+gprofiler1397mf <- gprofiler1397mf[,c("term_name", "term_id", "adjusted_p_value", "intersections")]
+colnames(gprofiler1397mf) <- c("Description", "ID", "p.adjust", "geneID")
+####GO Website - Powered by PANTHER#### 
+go1397_panthermf <-read.delim("~/Downloads/Summer Project/geo/GSE1397/GSE1397_MF_GO.txt", comment.char="#")
+go1397_panthermf <- go1397_panthermf %>% filter(!grepl('UNCLASSIFIED',GO.molecular.function.complete))
+go1397_panthermf_go <- go1397_panthermf$GO.molecular.function.complete
+go1397_panthermf_go <- word(go1397_panthermf_go, -1)
+go1397_panthermf_go <- gsub("[()]", "", go1397_panthermf_go)
+go1397_panthermf_description <- word(go1397_panthermf$GO.molecular.function.complete, 1, -2)
+go1397_panthermf_p.adj <- go1397_panthermf$upload_1..FDR.
+####GOrilla####
+gorilla1397mf <- read_excel("~/Downloads/Summer Project/geo/GSE1397/GSE1397_GOrilla_MF.xlsx")
+gorilla1397mf_p.adj <- p.adjust(gorilla1397mf$`P-value`, method = 'fdr')
+```
+
+```{r Comparing Table for GSE1397}
+####Biological Pathway####
+v1 <- david1397bp_go[,1]
+v2 <- gprofiler1397bp$ID
+v3 <- gorilla1397bp$`GO term`
+v4 <- go1397_pantherbp_go 
+bpGO1397 <- unique(c(v1,v2,v3, v4))
+#write.csv(bpGO1397, file='GSE1397bp.csv', row.names=F, sep="\t")
+bptable1397 <- data.frame("GO Term" = bpGO1397)
+bptable1397$david <- bpGO1397%in%v1
+bptable1397$gprofiler <- bpGO1397%in%v2
+bptable1397$gorilla <- bpGO1397%in%v3
+bptable1397$panther <- bpGO1397%in%v4
+bptable1397[bptable1397 == "TRUE"] <- "x"
+bptable1397[bptable1397 == "FALSE"] <- ""
+
+#create venn diagram
+list1397bp <- list(david = david1397bp_go[,1], gprofiler = gprofiler1397bp$ID, gorilla = gorilla1397bp$`GO term`, go_panther = go1397_pantherbp_go)
+
+
+####Molecular Function####
+v5 <- david1397mf_go[,1]
+v6 <- gprofiler1397mf$ID
+v7 <- gorilla1397mf$`GO term`
+v8 <- go1397_panthermf_go 
+mfGO1397 <- unique(c(v5,v6, v7, v8))
+#write.csv(mfGO1397, file='GSE1397mf.csv', row.names=F, sep="\t")
+
+mftable1397 <- data.frame("GO Term" = mfGO1397)
+mftable1397$david <- mfGO1397%in%v5
+mftable1397$gprofiler <- mfGO1397%in%v6
+mftable1397$gorilla <- mfGO1397%in%v7
+mftable1397$panther <- mfGO1397%in%v8
+mftable1397[mftable1397 == "TRUE"] <- "x"
+mftable1397[mftable1397 == "FALSE"] <- ""
+
+#create venn diagram 
+list1397mf <- list(david = david1397mf_go[,1], gprofiler = gprofiler1397mf$ID, gorilla = gorilla1397mf$`GO term`, panther = go1397_panthermf_go)
+
+
+####Cellular Component####
+v9 <- david1397cc_go[,1]
+v10 <- gprofiler1397cc$ID
+v11 <- gorilla1397cc$`GO term`
+v12 <- go1397_panthercc_go
+ccGO1397 <- unique(c(v9,v10,v11, v12))
+cctable1397 <- data.frame("GO Term" = ccGO1397)
+cctable1397$david <- ccGO1397%in%v9
+cctable1397$gprofiler <- ccGO1397%in%v10
+cctable1397$gorilla <- ccGO1397%in%v11
+cctable1397$panther <- ccGO1397%in%v12
+cctable1397[cctable1397 == "TRUE"] <- "x"
+cctable1397[cctable1397 == "FALSE"] <- ""
+
+#create venn diagram
+list1397cc <-  list(david = david1397cc_go[,1], gprofiler = gprofiler1397cc$ID, gorilla = gorilla1397cc$`GO term`, go_panther = go1397_panthercc_go)
+
+ggVennDiagram(list1397bp, label_alpha = 0, edge_lty = "blank") + ggplot2::scale_fill_gradient(low="white",high = "dark red")
+
+ggVennDiagram(list1397mf, label_alpha = 0, edge_lty = "blank") + ggplot2::scale_fill_gradient(low="white",high = "dark red")
+
+ggVennDiagram(list1397cc, label_alpha = 0, edge_lty = "blank") + ggplot2::scale_fill_gradient(low="white",high = "dark red")
+```
+##GSE60880
+```{r Dowload GSE60800, eval = FALSE}
+# Set the parameteers
+selected.gse <- GEOquery::getGEO("GSE60800", GSEMatrix = TRUE, getGPL = TRUE)
+
+class(selected.gse)
+names(selected.gse)
+
+##same with the below lines in Preeti's report
+##if (length(gset) > 1) idx <- grep("GPL570", attr(gset, "names")) else idx <- 1
+##gset <- gset[[idx]]
+eset.selected <- selected.gse[[1]]
+
+fvarLabels(eset.selected ) <- make.names(fvarLabels(eset.selected ))
+
+Biobase::pData(eset.selected)[,1:5]
+dim(exprs(eset.selected)) ## This gives 18 data points
+
+#Group names all of the samples
+gsms <- paste0("XXXXXXXXXXXXXXXXXX11XX2200XXXXXXXXX11XXXX22X00XXXX",
+        "XXXXX11XXXX22X00XXXXXXXXXXXXXXXXX")
+sml <- strsplit(gsms, split="")[[1]]
+
+##omit the last 6 data points and keep the rest
+sel <- which(sml != "X")
+sml <- sml[sel]
+eset.selected <- eset.selected[ ,sel]
+
+
+dim(exprs(eset.selected)) 
+
+eset.GSE60800 <- eset.selected 
+
+#log2 transformation
+ex <- exprs(eset.GSE60800)
+qx <- as.numeric(quantile(ex, c(0., 0.25, 0.5, 0.75, 0.99, 1.0), na.rm=T))
+LogC <- (qx[5] > 100) ||
+(qx[6]-qx[1] > 50 && qx[2] > 0) ||
+(qx[2] > 0 && qx[2] < 1 && qx[4] > 1 && qx[4] < 2)
+if (LogC) { ex[which(ex <= 0)] <- NaN
+exprs(eset.GSE60800) <- log2(ex) }
+
+# set up the data and proceed with analysis
+fl <- as.factor(sml)
+description <- make.names(c("egf8","egf_5","egf2"))
+levels(fl) <- description
+eset.GSE60800$description <- fl
+design <- model.matrix(~description + 0, eset.GSE60800)
+
+### model.matrix (from the stats package) creates a design matrix as specified.
+colnames(design) <- levels(fl)
+fit <- lmFit(eset.GSE60800, design)
+
+
+cts <- paste(description, c(tail(description, -1), head(description, 1)), sep="-")
+cont.matrix <- makeContrasts(contrasts=cts, levels=design)
+
+fit2 <- contrasts.fit(fit, cont.matrix)
+fit2 <- eBayes(fit2, 0.01)
+
+tT <- topTable(fit2, adjust="fdr", sort.by="B", number=500)
+
+gpl <- annotation(eset.GSE60800)
+platf <- getGEO(gpl, AnnotGPL=TRUE)
+ncbifd <- data.frame(attr(dataTable(platf), "table"))
+
+tT <- tT[setdiff(colnames(tT), setdiff(fvarLabels(eset.GSE60800), "ID"))]
+tT <- merge(tT, ncbifd, by="ID")
+
+tT <- tT[order(tT$P.Value), ] # restore correct order
+#tT <- subset(tT, select=c("ID","adj.P.Val","P.Value","Gene.Symbol","Gene.Title"))
+tT2 <- subset(tT, select=c("Gene.symbol"))
+#write.csv(tT, file='GSE60800.csv', row.names=F, sep="\t")
+#The gene list ends up to be very different from Preeti's report
+write.csv(tT2, file='GSE60800gene.csv', row.names=F)
+
+GSE60800background <- eset.GSE60800@featureData@data[["GENE_SYMBOL"]]
+write.csv(GSE60800background , file = 'GSE60800background.csv', row.names = F )
+
+##### Clean up #####
+#rm(geoID1, path.geo, new.folder, selected.gse, eset.selected)
+```
+
+```{r GSE60800 GO Term}
+##Except for FuncAssociation that is not indicated the GO domains, other tools would divide it into 3 groups as biological pathway, molecular function, and cellular component.
+
+####FuncAssociate####
+####g:Profiler####
+gprofiler60800 <- read_csv("~/Downloads/summer project/geo/GSE60800/GSE60800_gProfiler.csv")
+
+###GO Biological Pathway for GSE60800###
+####DAVID####
+#Choosing GO Direct term instead of choosing all 
+david60800bp <- read.delim("~/Downloads/Summer Project/geo/GSE60800/GSE60880_DAVID_BP.txt")
+david60800bp_go <- str_split_fixed(david60800bp$Term, "~", 2)
+david60800bp_geneid <- david60800bp$Genes
+david60800bp_padj <- david60800bp$FDR 
+####g:Profiler####
+gprofiler60800bp <- gprofiler60800  %>% filter(source == "GO:BP")
+gprofiler60800bp <- gprofiler60800bp[,c("term_name", "term_id", "adjusted_p_value", "intersections")]
+colnames(gprofiler60800bp) <- c("Description", "ID", "p.adjust", "geneID")
+####GO Website - Powered by PANTHER#### 
+go60800_pantherbp <-read.delim("~/Downloads/Summer Project/geo/GSE60800/GSE60800_GO_BP.txt", comment.char="#", header = TRUE)
+go60800_pantherbp_go <- go60800_pantherbp$GO.biological.process.complete
+go60800_pantherbp_go <- word(go60800_pantherbp_go, -1)
+go60800_pantherbp_go <- gsub("[()]", "", go60800_pantherbp_go)
+go60800_pantherbp_description <- word(go60800_pantherbp$GO.biological.process.complete, 1, -2)
+go60800_pantherbp_p.adj <- go60800_pantherbp$upload_1..FDR.
+####GOrilla####
+gorilla60800bp <- read_excel("~/Downloads/Summer Project/geo/GSE60800/GSE60800_GOrilla_BP.xlsx")
+gorilla60800bp_p.adj <- p.adjust(gorilla60800bp$`P-value`, method = 'fdr')
+
+###GO Cellular Component for GSE60800###
+####DAVID####
+david60800cc <- read.delim("~/Downloads/Summer Project/geo/GSE60800/GSE60800_DAVID_CC.txt")
+david60800cc_go <- str_split_fixed(david60800cc$Term, "~", 2)
+david60800cc_geneid <- david60800cc$Genes
+david60800cc_padj <- david60800cc$FDR 
+####g:Profiler####
+gprofiler60800cc <- gprofiler60800  %>% filter(source == "GO:CC")
+gprofiler60800cc <- gprofiler60800cc[,c("term_name", "term_id", "adjusted_p_value", "intersections")]
+colnames(gprofiler60800cc) <- c("Description", "ID", "p.adjust", "geneID")
+####GO Website - Powered by PANTHER#### 
+#There is no significant result 
+####GOrilla####
+#There is no significant result 
+
+###GO Molecular Function for GSE60800###
+####DAVID####
+david60800mf <- read.delim("~/Downloads/Summer Project/geo/GSE60800/GSE60800_DAVID_MF.txt")
+david60800mf_go <- str_split_fixed(david60800mf$Term, "~", 2)
+david60800mf_geneid <- david60800mf$Genes
+david60800mf_padj <- david60800mf$FDR 
+####g:Profiler####
+gprofiler60800mf <- gprofiler60800  %>% filter(source == "GO:MF")
+gprofiler60800mf <- gprofiler60800mf[,c("term_name", "term_id", "adjusted_p_value", "intersections")]
+colnames(gprofiler60800mf) <- c("Description", "ID", "p.adjust", "geneID")
+####GO Website - Powered by PANTHER#### 
+go60800_panthermf <-read.delim("~/Downloads/Summer Project/geo/GSE60800/GSE60800_GO_MF.txt", comment.char="#")
+go60800_panthermf_go <- go60800_panthermf$GO.molecular.function.complete
+go60800_panthermf_go <- word(go60800_panthermf_go, -1)
+go60800_panthermf_go <- gsub("[()]", "", go60800_panthermf_go)
+go60800_panthermf_description <- word(go60800_panthermf$GO.molecular.function.complete, 1, -2)
+go60800_panthermf_p.adj <- go60800_panthermf$upload_1..FDR.
+####GOrilla####
+gorilla60800mf <- read_excel("~/Downloads/Summer Project/geo/GSE60800/GSE60800_GOrilla_MF.xlsx")
+gorilla60800mf_p.adj <- p.adjust(gorilla60800mf$`P-value`, method = 'fdr')
+```
+
+```{r Comparing Table for GSE60800}
+####Biological Pathway####
+v1 <- david60800bp_go[,1]
+v2 <- gprofiler60800bp$ID
+v3 <- gorilla60800bp$`GO term`
+v4 <- go60800_pantherbp_go
+bpGO60800 <- unique(c(v1,v2,v3, v4))
+
+bptable60800 <- data.frame("GO Term" = bpGO60800)
+bptable60800$david <- bpGO60800%in%v1
+bptable60800$gprofiler <- bpGO60800%in%v2
+bptable60800$gorilla <- bpGO60800%in%v3
+bptable60800$panther <- bpGO60800%in%v4
+bptable60800[bptable60800 == "TRUE"] <- "x"
+bptable60800[bptable60800 == "FALSE"] <- ""
+
+#create venn diagram
+list60800bp <- list(david = david60800bp_go[,1], gprofiler = gprofiler60800bp$ID, gorilla = gorilla60800bp$`GO term`, go_panther = go60800_pantherbp_go)
+
+
+####Molecular Function####
+v5 <- david60800mf_go[,1]
+v6 <- gprofiler60800mf$ID
+v7 <- gorilla60800mf$`GO term`
+v8 <- go60800_panthermf_go
+mfGO60800 <- unique(c(v5,v6,v7,v8))
+
+mftable60800 <- data.frame("GO Term" = mfGO60800)
+mftable60800$david <- mfGO60800%in%v5
+mftable60800$gprofiler <- mfGO60800%in%v6
+mftable60800$gorilla <- mfGO60800%in%v7
+mftable60800$panther <- mfGO60800%in%v8
+mftable60800[mftable60800 == "TRUE"] <- "x"
+mftable60800[mftable60800 == "FALSE"] <- ""
+
+#create venn diagram 
+list60800mf <- list(david = david60800mf_go[,1], gprofiler = gprofiler60800mf$ID, gorilla = gorilla60800mf$`GO term`, panther = go60800_panthermf_go)
+
+
+####Cellular Component####
+v9 <- david60800cc_go[,1]
+v10 <-gprofiler60800cc$ID
+
+ccGO60800 <- unique(c(v9, v10))
+cctable60800 <- data.frame("GO Term" = ccGO60800)
+cctable60800$david <- ccGO60800%in%v9
+cctable60800$gprofiler <- ccGO60800%in%v10
+cctable60800[cctable60800 == "TRUE"] <- "x"
+cctable60800[cctable60800 == "FALSE"] <- ""
+
+#create venn diagram
+list60800cc <-  list(david = david60800cc_go[,1], gprofiler = gprofiler60800cc$ID)
+
+ggVennDiagram(list60800bp, label_alpha = 0, edge_lty = "blank") + ggplot2::scale_fill_gradient(low="white",high = "dark red")
+
+ggVennDiagram(list60800mf, label_alpha = 0, edge_lty = "blank") + ggplot2::scale_fill_gradient(low="white",high = "dark red")
+
+ggVennDiagram(list60800cc, label_alpha = 0, edge_lty = "blank") + ggplot2::scale_fill_gradient(low="white",high = "dark red")
+```
+
+
+
+##Download semantic similarity tools
+###ViSEAGO
+```{r ViSEAGO}
+#if (!require("BiocManager", quietly = TRUE))
+#install.packages("BiocManager")
+
+#BiocManager::install("ViSEAGO")
+library(ViSEAGO)
+```
+
+###simplifyEnrichment
+This section will use the simiplyEnrichment packages to see the semantic similarity between those significant GO Terms. 
+```{r simplifyEnrichment}
+###Downloading simplifyEnrichment package
+#if (!requireNamespace("BiocManager", quietly = TRUE))
+    #install.packages("BiocManager")
+#BiocManager::install("simplifyEnrichment")
+suppressPackageStartupMessages(library(simplifyEnrichment))
+```
+For GSE11352, it seems like for the cellular component, there are no cluster among those GO Terms. In addition to that, even the biological pathway domain returns one cluster, the similarity score between these GO Terms is quite low, as it is shown by the color of the heatmap. For molecular function domain, it returned one bigger cluster, and the relationship between those GO Terms in the cluster is more visible.
+
+For GSE1397, 
+
+
+For GSE60800, the heatmaps dedicated some relationships between GO Terms obtained from different tools. For biological pathway, it created multiple clusters with some strong relationships between them as the shade of color. 
+
+```{r simplifyEnrichment for GSE11352 - specify dataframe }
+d1 <- data.frame("ID" = david11352bp_go[,1],"Description" =  david11352bp_go[,2], "p.adjust" = david11352bp_padj, "geneID" = david11352bp_geneid)
+d2 <- data.frame(gprofiler11352bp[, c("ID", "Description", "p.adjust", "geneID")])
+d3 <- data.frame("ID" = go11352_pantherbp_go, "Description" = go11352_pantherbp_description, "p.adjust" = go11352_pantherbp_p.adj)
+###GOrilla####
+d4 <- data.frame("ID" = gorilla11352bp$`GO term`, "Description" = gorilla11352bp$Description, "p.adjust" = gorilla11352bp_p.adj)
+list1 <- list("david" = d1, "gprofiler" = d2, "panther" = d3, "gorilla" = d4)
+simplifyGOFromMultipleLists(list1, padj_cutoff = 0.05, ont = 'BP')
+
+d5 <- data.frame("ID" = david11352cc_go[,1],"Description" =  david11352cc_go[,2], "p.adjust" = david11352cc_padj, "geneID" = david11352cc_geneid  )
+d6 <- data.frame(gprofiler11352cc[, c("ID", "Description", "p.adjust", "geneID")])
+d7 <- data.frame("ID" = go11352_panthercc_go, "Description" = go11352_panthercc_description, "p.adjust" = go11352_panthercc_p.adj)
+d8 <- data.frame("ID" = gorilla11352cc$`GO term`, "Description" = gorilla11352cc$Description, "p.adjust" = gorilla11352cc_p.adj)
+list2 <- list("david" = d5, "gprofiler" = d6, "panther" = d7, "gorilla" = d8)
+simplifyGOFromMultipleLists(list2, padj_cutoff = 0.05, ont = 'CC')
+
+d9 <- data.frame("ID" = david11352mf_go[,1],"Description" =  david11352mf_go[,2], "p.adjust" = david11352mf_padj, "geneID" = david11352mf_geneid)
+d10 <- data.frame(gprofiler11352mf[, c("ID", "Description", "p.adjust", "geneID")])
+d11 <- data.frame("ID" = go11352_panthermf_go, "Description" = go11352_panthermf_description, "p.adjust" = go11352_panthermf_p.adj)
+d12 <- data.frame("ID" = gorilla11352mf$`GO term`, "Description" = gorilla11352mf$Description, "p.adjust" = gorilla11352mf_p.adj)
+list3 <- list("david" = d9, "gprofiler" = d10, "panther" = d11, "gorilla" = d12)
+simplifyGOFromMultipleLists(list3, padj_cutoff = 0.05, ont = 'MF')
+```
+These are heat maps for each domain of *GSE1397*
+```{r simlifyEnrichment GSE1397, echo = FALSE}
+d1 <- data.frame("ID" = david1397bp_go[,1],"Description" =  david1397bp_go[,2], "p.adjust" = david1397bp_padj, "geneID" = david1397bp_geneid  )
+d2 <- data.frame(gprofiler1397bp[, c("ID", "Description", "p.adjust", "geneID")])
+d3 <- data.frame("ID" = go1397_pantherbp_go, "Description" = go1397_pantherbp_description, "p.adjust" = go1397_pantherbp_p.adj)
+###GOrilla####
+d4 <- data.frame("ID" = gorilla1397bp$`GO term`, "Description" = gorilla1397bp$Description, "p.adjust" = gorilla1397bp_p.adj)
+list1 <- list("david" = d1, "gprofiler" = d2, "panther" = d3, "gorilla" = d4)
+simplifyGOFromMultipleLists(list1, padj_cutoff = 0.05, ont = 'BP')
+
+d5 <- data.frame("ID" = david1397cc_go[,1],"Description" =  david1397cc_go[,2], "p.adjust" = david1397cc_padj, "geneID" = david1397cc_geneid  )
+d6 <- data.frame(gprofiler1397cc[, c("ID", "Description", "p.adjust", "geneID")])
+d7 <- data.frame("ID" = go1397_panthercc_go, "Description" = go1397_panthercc_description, "p.adjust" = go1397_panthercc_p.adj)
+d8 <- data.frame("ID" = gorilla1397cc$`GO term`, "Description" = gorilla1397cc$Description, "p.adjust" = gorilla1397cc_p.adj)
+list2 <- list("david" = d5, "gprofiler" = d6, "panther" = d7, "gorilla" = d8)
+simplifyGOFromMultipleLists(list2, padj_cutoff = 0.05, ont = 'CC')
+
+d9 <- data.frame("ID" = david1397mf_go[,1],"Description" =  david1397mf_go[,2], "p.adjust" = david1397mf_padj, "geneID" = david1397mf_geneid  )
+d10 <- data.frame(gprofiler1397mf[, c("ID", "Description", "p.adjust", "geneID")])
+d11 <- data.frame("ID" = go1397_panthermf_go, "Description" = go1397_panthermf_description, "p.adjust" = go1397_panthermf_p.adj)
+d12 <- data.frame("ID" = gorilla1397mf$`GO term`, "Description" = gorilla1397mf$Description, "p.adjust" = gorilla1397mf_p.adj)
+list3 <- list("david" = d9, "gprofiler" = d10, "panther" = d11, "gorilla" = d12)
+simplifyGOFromMultipleLists(list3, padj_cutoff = 0.05, ont = 'MF')
+```
+
+###GOSemSim
+Load GOSemSim package for usage. 
+```{r GOSemSim}
+suppressPackageStartupMessages(library(GOSemSim))
+```
+This section will calculate the semantic similarity between GO Terms from differen domains of GSE11352 between two different GO Tools . These GO Terms need to be the non-overlapped GO Terms coming from the two different GO tools that have been tested. The Wang method will be used in order to calculate the semantic similarity.
+
+After testing, it seems like the remaining GO Terms coming from different tools don't have any semantic similarity, as the result keeps returning zero for the almost/whole table, except the GO Terms from GOrilla and PANTHER in molecular function domain. This indicates that there are rarely any relationship between these GO Terms from different tools (i.e they are not in the sub-family or having any direct relationship with each other). In addition, This result is quite consistent with the result obtained from simplifyEnrichment package above, when those GO Terms from different domains of GSE11352 barely result in any cluster. 
+```{r GOSemSim GSE11352}
+####Biological Pathway####
+hsGObp <- godata('org.Hs.eg.db', ont="BP")
+#between DAVID vs. g:Profiler
+remove <- intersect(david11352bp_go[,1], gprofiler11352bp$ID)
+david <- setdiff(david11352bp_go[,1], remove)
+gprofiler <- setdiff(gprofiler11352bp$ID, remove)
+#table1 <- c(david, gprofiler)
+test1 <- mgoSim(david, gprofiler, semData=hsGObp, measure="Wang", combine=NULL)
+test1
+#between DAVID vs.GOrilla
+remove <- intersect(david11352bp_go[,1], gorilla11352bp$`GO term`)
+david <- setdiff(david11352bp_go[,1], remove)
+gorilla <- setdiff(gorilla11352bp$`GO term`, remove)
+test2 <- mgoSim(david, gorilla, semData=hsGObp, measure="Wang", combine=NULL)
+test2
+#between DAVID vs. PANTER
+remove <- intersect(david11352bp_go[,1], go11352_pantherbp_go)
+david <- setdiff(david11352bp_go[,1], remove)
+panther <- setdiff( go11352_pantherbp_go, remove)
+test3 <- mgoSim(david, panther, semData=hsGObp, measure="Wang", combine=NULL)
+test3
+#between g:Profiler vs.GOrilla
+remove <- intersect(gprofiler11352bp$ID, gorilla11352bp$`GO term`)
+gprofiler <- setdiff(gprofiler11352bp$ID, remove)
+gorilla <- setdiff(gorilla11352bp$`GO term`, remove)
+test4 <- mgoSim(gprofiler, gorilla, semData=hsGObp, measure="Wang", combine=NULL)
+test4
+#between g:Profiler vs.PANTHER
+remove <- intersect(gprofiler11352bp$ID, go11352_pantherbp_go)
+gprofiler <- setdiff(gprofiler11352bp$ID, remove)
+panther <- setdiff( go11352_pantherbp_go, remove)
+test5 <<- mgoSim(gprofiler, panther, semData=hsGObp, measure="Wang", combine=NULL)
+test5
+#between GOrilla vs PANTHER. 
+remove <- intersect(gorilla11352bp$`GO term`,go11352_pantherbp_go )
+gorilla <- setdiff(gorilla11352bp$`GO term`, remove)
+panther <- setdiff( go11352_pantherbp_go, remove)
+test6 <- mgoSim(gorilla, panther, semData=hsGObp, measure="Wang", combine=NULL)
+test6
+####Cellular Component####
+hsGOcc <- godata('org.Hs.eg.db', ont="CC")
+#between DAVID vs. g:Profiler
+remove <- intersect(david11352cc_go[,1], gprofiler11352cc$ID)
+david <- setdiff(david11352cc_go[,1], remove)
+gprofiler <- setdiff(gprofiler11352cc$ID, remove)
+test7 <- mgoSim(david, gprofiler, semData=hsGOcc, measure="Wang", combine=NULL)
+test7
+#between DAVID vs.GOrilla
+remove <- intersect(david11352cc_go[,1], gorilla11352cc$`GO term`)
+david <- setdiff(david11352cc_go[,1], remove)
+gorilla <- setdiff(gorilla11352cc$`GO term`, remove)
+test8 <-mgoSim(david, gorilla , semData=hsGOcc, measure="Wang", combine=NULL)
+test8
+#between DAVID vs. PANTER
+remove <- intersect(david11352cc_go[,1], go11352_panthercc_go)
+david <- setdiff(david11352cc_go[,1], remove)
+panther <- setdiff( go11352_panthercc_go, remove)
+test9 <- mgoSim(david, panther , semData=hsGOcc, measure="Wang", combine=NULL)
+test9
+#between g:Profiler vs.GOrilla
+remove <- intersect(gprofiler11352cc$ID, gorilla11352cc$`GO term`)
+gprofiler <- setdiff(gprofiler11352cc$ID, remove)
+gorilla <- setdiff(gorilla11352cc$`GO term`, remove)
+test10 <- mgoSim(gprofiler, gorilla, semData=hsGOcc, measure="Wang", combine=NULL)
+test10
+#betweeng:Profiler vs.PANTHER
+remove <- intersect(gprofiler11352cc$ID, go11352_panthercc_go)
+gprofiler <- setdiff(gprofiler11352cc$ID, remove)
+panther <- setdiff( go11352_panthercc_go, remove)
+test11 <- mgoSim(gprofiler, panther, semData=hsGOcc, measure="Wang", combine=NULL)
+test11
+#between GOrilla vs PANTHER. 
+remove <- intersect(gorilla11352cc$`GO term`,go11352_panthercc_go )
+gorilla <- setdiff(gorilla11352cc$`GO term`, remove)
+panther <- setdiff( go11352_panthercc_go, remove)
+test12 <- mgoSim(gorilla, panther, semData=hsGOcc, measure="Wang", combine=NULL)
+test12
+
+####Molecular Function####
+#between DAVID vs. g:Profiler
+hsGOmf <- godata('org.Hs.eg.db', ont = "MF")
+remove <- intersect(david11352mf_go[,1], gprofiler11352mf$ID)
+david <- setdiff(david11352mf_go[,1], remove)
+gprofiler <- setdiff(gprofiler11352mf$ID, remove)
+test13 <- mgoSim(david, gprofiler, semData=hsGOmf, measure="Wang", combine=NULL)
+test13
+#between DAVID vs.GOrilla
+remove <- intersect(david11352mf_go[,1], gorilla11352mf$`GO term`)
+david <- setdiff(david11352mf_go[,1], remove)
+gorilla <- setdiff(gorilla11352mf$`GO term`, remove)
+test14 <-mgoSim(david, gorilla , semData=hsGOmf, measure="Wang", combine=NULL)
+test14
+#between DAVID vs. PANTER
+remove <- intersect(david11352mf_go[,1], go11352_panthermf_go)
+david <- setdiff(david11352mf_go[,1], remove)
+panther <- setdiff(go11352_panthermf_go, remove)
+test15 <- mgoSim(david, panther , semData=hsGOmf, measure="Wang", combine=NULL)
+test15
+#between g:Profiler vs.GOrilla
+remove <- intersect(gprofiler11352mf$ID, gorilla11352mf$`GO term`)
+gprofiler <- setdiff(gprofiler11352mf$ID, remove)
+gorilla <- setdiff(gorilla11352mf$`GO term`, remove)
+test16 <-mgoSim(gprofiler, gorilla, semData=hsGOmf, measure="Wang", combine=NULL)
+test16
+#betweeng:Profiler vs.PANTHER
+remove <- intersect(gprofiler11352mf$ID, go11352_panthermf_go)
+gprofiler <- setdiff(gprofiler11352mf$ID, remove)
+panther <- setdiff( go11352_panthermf_go, remove)
+test17 <-mgoSim(gprofiler, panther, semData=hsGOmf, measure="Wang", combine=NULL)
+
+#between GOrilla vs PANTHER. 
+remove <- intersect(gorilla11352mf$`GO term`,go11352_panthermf_go )
+gorilla <- setdiff(gorilla11352mf$`GO term`, remove)
+panther <- setdiff(go11352_panthermf_go, remove)
+test18 <-mgoSim(gorilla, panther, semData=hsGOmf, measure="Wang", combine=NULL)
+```
+
+
+This section will tested for the GSE1397 as same as the above. The result returned more relationship between those GO Terms, even though the semantic similarity between them is quite varied. 
+
+For biological pathway, there is some similary between those GO Terms across four different tools. However, it seems like the similarly is quite weak since there are some zero value in those tables. In addition to that, the semantic similarity values between those GO Terms are also quite low. This result is consistent with the heatmap for biological pathway in simplifyEnrichment package above, when there are multiple cluster generated but the similarity, which is indicated by the color, is quite vague. 
+
+For cellular component, multiple tests showed that there are a lot of GO Terms that has no semantic similarity between them, as it returns zero value when calculate the GO Terms across the tables. However, in this domain, there are some GO Terms that has a very strong similarity values ( >0.1), which indicate they may have some types of direct relationship with each other. This can also be seen in the simplifyEnrichment's heatmap, as even though it only generated one cluster, but the colors of similarity is morre apparently.
+
+For molecular function, multiple tested showed that there are no test with the zero values when indicating the similarity between GO Terms. Moreover, the similarity score is also quite high comparing to other domains as a lot of those scores are quite near to 0.1 or higher than that. This is also consistent to the heatmap of simplifyEnrichment. 
+```{r GOSemSim GSE1397}
+####Biological Pathway####
+hsGObp <- godata('org.Hs.eg.db', ont="BP")
+#between DAVID vs. g:Profiler
+remove <- intersect(david1397bp_go[,1], gprofiler1397bp$ID)
+david <- setdiff(david1397bp_go[,1], remove)
+gprofiler <- setdiff(gprofiler1397bp$ID, remove)
+test1 <- mgoSim(david, gprofiler, semData=hsGObp, measure="Wang", combine=NULL)
+test1
+#between DAVID vs.GOrilla
+remove <- intersect(david1397bp_go[,1], gorilla1397bp$`GO term`)
+david <- setdiff(david1397bp_go[,1], remove)
+gorilla <- setdiff(gorilla1397bp$`GO term`, remove)
+test2 <- mgoSim(david, gorilla, semData=hsGObp, measure="Wang", combine=NULL)
+test2
+#between DAVID vs. PANTER
+remove <- intersect(david1397bp_go[,1], go1397_pantherbp_go)
+david <- setdiff(david1397bp_go[,1], remove)
+panther <- setdiff(go1397_pantherbp_go, remove)
+test3 <- mgoSim(david, panther, semData=hsGObp, measure="Wang", combine=NULL)
+test3
+#between g:Profiler vs.GOrilla
+remove <- intersect(gprofiler1397bp$ID, gorilla1397bp$`GO term`)
+gprofiler <- setdiff(gprofiler1397bp$ID, remove)
+gorilla <- setdiff(gorilla1397bp$`GO term`, remove)
+test4 <- mgoSim(gprofiler, gorilla, semData=hsGObp, measure="Wang", combine=NULL)
+test4
+#between g:Profiler vs.PANTHER
+remove <- intersect(gprofiler1397bp$ID, go1397_pantherbp_go)
+gprofiler <- setdiff(gprofiler1397bp$ID, remove)
+panther <- setdiff( go1397_pantherbp_go, remove)
+test5 <-mgoSim(gprofiler, panther, semData=hsGObp, measure="Wang", combine=NULL)
+test5
+#between GOrilla vs PANTHER. 
+remove <- intersect(gorilla1397bp$`GO term`,go1397_pantherbp_go )
+gorilla <- setdiff(gorilla1397bp$`GO term`, remove)
+panther <- setdiff(go1397_pantherbp_go, remove)
+test6 <- mgoSim(gorilla, panther, semData=hsGObp, measure="Wang", combine=NULL)
+test6
+####Cellular Component####
+hsGOcc <- godata('org.Hs.eg.db', ont="CC")
+#between DAVID vs. g:Profiler
+remove <- intersect(david1397cc_go[,1], gprofiler1397cc$ID)
+david <- setdiff(david1397cc_go[,1], remove)
+gprofiler <- setdiff(gprofiler1397cc$ID, remove)
+test7 <- mgoSim(david, gprofiler, semData=hsGOcc, measure="Wang", combine=NULL)
+test7
+#between DAVID vs.GOrilla
+remove <- intersect(david1397cc_go[,1], gorilla1397cc$`GO term`)
+david <- setdiff(david1397cc_go[,1], remove)
+gorilla <- setdiff(gorilla1397cc$`GO term`, remove)
+test8 <- mgoSim(david, gorilla , semData=hsGOcc, measure="Wang", combine=NULL)
+test8
+#between DAVID vs. PANTER
+remove <- intersect(david1397cc_go[,1], go1397_panthercc_go)
+david <- setdiff(david1397cc_go[,1], remove)
+panther <- setdiff(go1397_panthercc_go, remove)
+test9 <- mgoSim(david, panther , semData=hsGOcc, measure="Wang", combine=NULL)
+test9
+#between g:Profiler vs.GOrilla
+remove <- intersect(gprofiler1397cc$ID, gorilla1397cc$`GO term`)
+gprofiler <- setdiff(gprofiler1397cc$ID, remove)
+gorilla <- setdiff(gorilla1397cc$`GO term`, remove)
+test10 <- mgoSim(gprofiler, gorilla, semData=hsGOcc, measure="Wang", combine=NULL)
+test10
+#betweeng:Profiler vs.PANTHER
+remove <- intersect(gprofiler1397cc$ID, go1397_panthercc_go)
+gprofiler <- setdiff(gprofiler1397cc$ID, remove)
+panther <- setdiff(go1397_panthercc_go, remove)
+test11 <- mgoSim(gprofiler, panther, semData=hsGOcc, measure="Wang", combine=NULL)
+
+#between GOrilla vs PANTHER. 
+remove <- intersect(gorilla1397cc$`GO term`,go1397_panthercc_go )
+gorilla <- setdiff(gorilla1397cc$`GO term`, remove)
+panther <- setdiff(go1397_panthercc_go, remove)
+test12 <- mgoSim(gorilla, panther, semData=hsGOcc, measure="Wang", combine=NULL)
+test12
+####Molecular Function####
+hsGOmf <- godata('org.Hs.eg.db', ont = "MF")
+remove <- intersect(david1397mf_go[,1], gprofiler1397mf$ID)
+david <- setdiff(david1397mf_go[,1], remove)
+gprofiler <- setdiff(gprofiler1397mf$ID, remove)
+test13 <- mgoSim(david, gprofiler, semData=hsGOmf, measure="Wang", combine=NULL)
+test13
+#between DAVID vs.GOrilla
+remove <- intersect(david1397mf_go[,1], gorilla1397mf$`GO term`)
+david <- setdiff(david1397mf_go[,1], remove)
+gorilla <- setdiff(gorilla1397mf$`GO term`, remove)
+test14 <- mgoSim(david, gorilla , semData=hsGOmf, measure="Wang", combine=NULL)
+test14
+#between g:Profiler vs.GOrilla
+remove <- intersect(gprofiler1397mf$ID, gorilla1397cc$`GO term`)
+gprofiler <- setdiff(gprofiler1397mf$ID, remove)
+gorilla <- setdiff(gorilla1397mf$`GO term`, remove)
+test15 <- mgoSim(gprofiler, gorilla, semData=hsGOmf, measure="Wang", combine=NULL)
+test15
+```
+
+This section will be tested for gene set GSE60800. The result returned some relationships between GO Terms across different tools. 
+
+For biological pathway, 
+
+For cellular component, 
+
+For molecular function,
+```{r GOSemSim GSE60800}
+####Biological Pathway####
+hsGObp <- godata('org.Hs.eg.db', ont="BP")
+#between DAVID vs. g:Profiler
+remove <- intersect(david60800bp_go[,1], gprofiler60800bp$ID)
+david <- setdiff(david60800bp_go[,1], remove)
+gprofiler <- setdiff(gprofiler60800bp$ID, remove)
+test1 <- mgoSim(david, gprofiler, semData=hsGObp, measure="Wang", combine=NULL)
+test1
+#between DAVID vs.GOrilla
+remove <- intersect(david60800bp_go[,1], gorilla60800bp$`GO term`)
+david <- setdiff(david60800bp_go[,1], remove)
+gorilla <- setdiff(gorilla60800bp$`GO term`, remove)
+test2 <- mgoSim(david, gorilla, semData=hsGObp, measure="Wang", combine=NULL)
+test2
+#between DAVID vs. PANTER
+remove <- intersect(david60800bp_go[,1], go60800_pantherbp_go)
+david <- setdiff(david60800bp_go[,1], remove)
+panther <- setdiff(go60800_pantherbp_go, remove)
+test3 <- mgoSim(david, panther, semData=hsGObp, measure="Wang", combine=NULL)
+test3
+#between g:Profiler vs.GOrilla
+remove <- intersect(gprofiler60800bp$ID, gorilla60800bp$`GO term`)
+gprofiler <- setdiff(gprofiler60800bp$ID, remove)
+gorilla <- setdiff(gorilla60800bp$`GO term`, remove)
+test4 <- mgoSim(gprofiler, gorilla, semData=hsGObp, measure="Wang", combine=NULL)
+test4
+#between g:Profiler vs.PANTHER
+remove <- intersect(gprofiler60800bp$ID, go60800_pantherbp_go)
+gprofiler <- setdiff(gprofiler60800bp$ID, remove)
+panther <- setdiff(go60800_pantherbp_go, remove)
+test5 <-mgoSim(gprofiler, panther, semData=hsGObp, measure="Wang", combine=NULL)
+test5
+#between GOrilla vs PANTHER. 
+remove <- intersect(gorilla60800bp$`GO term`,go60800_pantherbp_go)
+gorilla <- setdiff(gorilla60800bp$`GO term`, remove)
+panther <- setdiff(go60800_pantherbp_go, remove)
+test6 <- mgoSim(gorilla, panther, semData=hsGObp, measure="Wang", combine=NULL)
+test6
+
+####Cellular Component####
+hsGOcc <- godata('org.Hs.eg.db', ont = "CC")
+#between DAVID vs. g:Profiler
+remove <- intersect(david60800cc_go[,1], gprofiler60800cc$ID)
+david <- setdiff(david60800cc_go[,1], remove)
+gprofiler <- setdiff(gprofiler60800cc$ID, remove)
+test7 <- mgoSim(david, gprofiler, semData=hsGOcc, measure="Wang", combine=NULL)
+test7
+
+####Molecular Function####
+hsGOmf <- godata('org.Hs.eg.db', ont = "MF")
+remove <- intersect(david60800mf_go[,1], gprofiler60800mf$ID)
+david <- setdiff(david60800mf_go[,1], remove)
+gprofiler <- setdiff(gprofiler60800mf$ID, remove)
+test8 <- mgoSim(david, gprofiler, semData=hsGOmf, measure="Wang", combine=NULL)
+test8
+#between DAVID vs.GOrilla
+remove <- intersect(david60800mf_go[,1], gorilla60800mf$`GO term`)
+david <- setdiff(david60800mf_go[,1], remove)
+gorilla <- setdiff(gorilla60800mf$`GO term`, remove)
+test9 <- mgoSim(david, gorilla , semData=hsGOmf, measure="Wang", combine=NULL)
+test9
+#between DAVID vs. PANTHER
+remove <- intersect(david60800mf_go[,1], go60800_panthermf_go)
+david <- setdiff(david60800mf_go[,1], remove)
+panther <- setdiff(go60800_panthermf_go, remove)
+test10 <- mgoSim(david, panther , semData=hsGOmf, measure="Wang", combine=NULL)
+test10
+#between g:Profiler vs.GOrilla
+remove <- intersect(gprofiler60800mf$ID, gorilla60800mf$`GO term`)
+gprofiler <- setdiff(gprofiler60800mf$ID, remove)
+gorilla <- setdiff(gorilla60800mf$`GO term`, remove)
+test11 <- mgoSim(gprofiler, gorilla, semData=hsGOmf, measure="Wang", combine=NULL)
+test11
+#betweeng:Profiler vs.PANTHER
+remove <- intersect(gprofiler60800mf$ID, go60800_panthermf_go)
+gprofiler <- setdiff(gprofiler60800mf$ID, remove)
+panther <- setdiff( go60800_panthermf_go, remove)
+test16 <-mgoSim(gprofiler, panther, semData=hsGOmf, measure="Wang", combine=NULL)
+test16
+#between GOrilla vs PANTHER. 
+remove <- intersect(gorilla60800mf$`GO term`,go60800_panthermf_go )
+gorilla <- setdiff(gorilla60800mf$`GO term`, remove)
+panther <- setdiff(go60800_panthermf_go, remove)
+test17 <-mgoSim(gorilla, panther, semData=hsGOmf, measure="Wang", combine=NULL)
+test17
+```
+
+From this, it is shown that the GOSemSim result and simplifyEnrichment are consistent with each other. 
+
+```{r}
+sessionInfo()
+```
